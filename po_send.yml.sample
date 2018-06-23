@@ -1,0 +1,4 @@
+token: <your application's API token>
+user: <the user/group key of your user (or you)>
+title: <your message's title>
+

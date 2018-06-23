@@ -1,0 +1,179 @@
+#!/usr/bin/env ruby
+#
+# po_send: Send icinga/nagios notifications via pushover
+#
+# Copyright 2015 Konstantinos Pachnis
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+require 'erb'
+require 'net/https'
+require 'optparse'
+require 'ostruct'
+require 'syslog/logger'
+require 'yaml'
+
+LOG = Syslog::Logger.new 'po_send'
+
+class Options
+  def self.parse(args)
+    options = OpenStruct.new(
+      config: File.join(File.dirname(__FILE__), 'po_send.yml')
+    )
+
+    opt_parser = OptionParser.new do |opts|
+      opts.on('-c', '--config', 'Configuration file') do |c|
+        config = c
+      end
+
+      opts.on_tail('-h', '--help', 'Show this message') do
+        puts opts
+        exit
+      end
+    end
+    begin
+      opt_parser.parse!(args)
+      options
+    rescue OptionParser::ParseError => e
+      abort(e.message, '\n', opts)
+    end
+  end
+end
+
+module Nagios
+  class Notification
+    TEMPLATE = File.join(File.dirname(__FILE__), 'notification.erb')
+
+    PRIORITIES = {
+      PROBLEM:            1,
+      RECOVERY:           0,
+      ACKNOWLEDGEMENT:    0,
+      FLAPPINGSTART:      1,
+      FLAPPINGSTOP:       0,
+      FLAPPINGDISABLED:   1,
+      DOWNTIMESTART:      1,
+      DOWNTIMEEND:        0,
+      DOWNTIMECANCELLED:  1
+    }
+
+    attr_reader :priority
+    attr_reader :host, :notification, :service
+
+    def initialize
+      ms = monitoring_system
+
+      @notification = OpenStruct.new(
+        timestamp:  ENV["#{ms}_LONGDATETIME"],
+        type:       ENV["#{ms}_NOTIFICATIONTYPE"]
+      )
+
+      @host = OpenStruct.new(
+        name:     ENV["#{ms}_HOSTNAME"],
+        state:    ENV["#{ms}_HOSTSTATE"],
+        address:  ENV["#{ms}_HOSTADDRESS"],
+        output:   ENV["#{ms}_HOSTOUTPUT"],
+        alias:    ENV["#{ms}_HOSTALIAS"]
+      )
+
+      @service = OpenStruct.new(
+        description:  ENV["#{ms}_SERVICEDESC"],
+        state:        ENV["#{ms}_SERVICESTATE"],
+        output:       ENV["#{ms}_SERVICEOUTPUT"]
+      )
+    end
+
+    def create
+      ERB.new(File.read(TEMPLATE), 0, '-').result(binding)
+    end
+
+    def priority
+      PRIORITIES[@notification.type.to_sym]
+    end
+
+    private
+
+    def monitoring_system
+      if ENV['ICINGA_NOTIFICATIONTYPE']
+        'ICINGA'
+      elsif ENV['NAGIOS_NOTIFICATIONTYPE']
+        'NAGIOS'
+      else
+        LOG.error('Cannot detect if this icinga or nagios. Have you enabled environment macros?')
+        abort
+      end
+    end
+  end
+end
+
+module Pushover
+  PUSHOVER_API_URL = 'https://api.pushover.net/1'
+
+  class Config
+    def self.load(file)
+      conf = OpenStruct.new
+
+      if File.exist?(file)
+        YAML.load_file(file).each do |k, v|
+          conf.send("#{k}=", v)
+        end
+      else
+        LOG.error('Where is the configuration file?')
+        abort
+      end
+
+      conf
+    end
+  end
+
+  class Message
+    class << self
+      def send(conf, message, priority)
+        url = URI.parse("#{PUSHOVER_API_URL}/messages.json")
+
+        req = Net::HTTP::Post.new(url.path)
+        req.set_form_data(
+          token:      conf.token,
+          user:       conf.user,
+          title:      conf.title,
+          message:    message,
+          priority:   priority,
+          html:       1
+        )
+
+        res = Net::HTTP.start(url.hostname, url.port, use_ssl: true) do |http|
+          http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+          http.request(req)
+        end
+
+        unless res.code == '200'
+          errors = JSON.parse(res.body)['errors']
+          LOG.error(errors.join)
+        end
+      end
+    end
+  end
+end
+
+class Runner
+  def self.run
+    options = Options.parse(ARGV)
+
+    notification = Nagios::Notification.new
+    message = notification.create
+    priority = notification.priority
+    conf = Pushover::Config.load(options.config)
+    Pushover::Message.send(conf, message, priority)
+  end
+end
+
+Runner.run

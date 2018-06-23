@@ -1,0 +1,10 @@
+# Notificaton commands
+define command{
+	command_name notify-host-by-pushover
+	command_line /opt/po_send/po_send
+	}
+
+define command{
+	command_name notify-service-by-pushover
+	command_line /opt/po_send/po_send
+	}

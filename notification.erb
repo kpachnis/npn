@@ -1,0 +1,12 @@
+<b>Date</b>: <%= @notification.timestamp %>
+<b>Type</b>: <%= @notification.type %>
+
+<b>Host</b>: <%= @host.name %> / <%= @host.address %>
+
+<% unless @service.state.empty? -%>
+<b>State</b>: <%= @service.state %>
+<b>Details</b>:
+<%= @service.output %>
+<% else -%>
+<%= @host.output %>
+<% end -%>
